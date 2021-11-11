@@ -1,6 +1,8 @@
 module PE;
 
 export {
+    redef record PE::Info += {section_entropy: vector of string &log &optional &default=vector();};
+	option default_log_section_entropy = T;
 
 	type ExportName: record {
 		rva:  count;
@@ -50,7 +52,52 @@ export {
 	type ImportTable: record {
 		entries: vector of ImportTableEntry;
 	};
+}
 
+event pe_section_bytes_counts(f: fa_file, cts: table[string] of table[count] of count, section_lenghts: table[string] of double) {
+	# Ignore this event when we're not interested in the section entropy
+	if ( ! default_log_section_entropy ) {
+		return;
+	}
+
+	# A temporary table to save the intermediate results
+	local tmp_table: vector of string;
+
+	for (section, counts in cts) {
+		local sectionTotalBytes: double = section_lenghts[section];
+		local entropy: double = 0.0;
+
+		# Calculate the Shannon entropy of the bits
+		# https://en.wikipedia.org/wiki/Entropy_(information_theory)
+		# H(X) = -sum(P_xi * log_2(xi))
+		# where log2() is represented with log10(p_x)/log10(2)
+		for (byte, cnt in counts) {
+			local p_x: double = cnt/sectionTotalBytes;
+
+			if (p_x > 0.0) {
+				entropy = entropy - (p_x * log10(p_x)/log10(2));
+			}
+		}
+
+		local entropy_string: string = fmt("%s:%f", section, entropy);
+
+		# If the vector() is still empty, create one
+		if ( | f$pe$section_entropy | == 0 ) {
+			tmp_table = vector();
+		} else {
+			# Otherwise just set the existing table as the temporary table
+			tmp_table = f$pe$section_entropy;
+		}
+
+		# Add the new entropy string of this section to the table
+		tmp_table += entropy_string;
+
+		# And set the table back to the section_entropy field
+		f$pe$section_entropy = tmp_table;
+
+		## DEBUG
+		#print fmt("Entropy for section '%s': %f", section, entropy);
+	}
 }
 
 module Files;
