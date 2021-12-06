@@ -1,7 +1,7 @@
 module PE;
 
 export {
-	option pe_log_section_entropy = T;
+	option pe_log_section_entropy = F;
 	option pe_log_section_flags = F;
 	option pe_log_import_table = F;
 
@@ -13,8 +13,8 @@ export {
 
     redef record PE::Info += {
 		section_info_table: table[string] of SectionInfo &default=table();
-		section_info: vector of string &log &optional;
-		import_table_entries: vector of string &log &optional &default=vector();
+		section_names: vector of string &log &optional;
+		import_table: vector of string &log &optional;
 		};
 
 	type ExportName: record {
@@ -98,7 +98,7 @@ event pe_section_bytes_counts(f: fa_file, cts: table[string] of table[count] of 
 		if ( section !in f$pe$section_info_table ) {
 			f$pe$section_info_table[section] = [];
 		}
-		# f$pe$section_info_table[section]$entropy = entropy;
+		f$pe$section_info_table[section]$entropy = entropy;
 	}
 }
 
@@ -168,21 +168,31 @@ event pe_import_table(f: fa_file, it: PE::ImportTable) {
         }
     }
     # Finally, put it in the actual PE log
-    f$pe$import_table_entries = temp_tbl;
+    f$pe$import_table = temp_tbl;
 }
 
 # Called when the file analysis is closed
 event file_state_remove(f: fa_file)
     {
-	# Delete the default section_names field
-	delete f$pe$section_names;
+	# If any of the new logging is enabled, delete the default section_names field
+	# This means that default functionality is not changed
+	if ( pe_log_section_flags  || pe_log_section_entropy ) {
+		f$pe$section_names = vector();
 
-	f$pe$section_info = vector();
-
-	for ( section, info in f$pe$section_info_table ) {
-		f$pe$section_info += fmt("%s:%s:%.2f", section, info$flags, info$entropy);
+		for ( section, info in f$pe$section_info_table ) {
+			local formatted_string: string = "";
+			if (pe_log_section_entropy && pe_log_section_flags ) {
+				formatted_string = fmt("%s:%s:%.2f", section, info$flags, info$entropy);
+			}
+			if (pe_log_section_entropy && ! pe_log_section_flags ) {
+				formatted_string = fmt("%s:%.2f", section, info$entropy);
+			}
+			if (! pe_log_section_entropy && pe_log_section_flags ) {
+				formatted_string = fmt("%s:%s", section, info$flags);
+			}
+			f$pe$section_names += formatted_string;
+		}
 	}
-
 }
 
 
