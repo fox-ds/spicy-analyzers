@@ -1,8 +1,21 @@
 module PE;
 
 export {
-    redef record PE::Info += {section_entropy: vector of string &log &optional &default=vector();};
-	option default_log_section_entropy = T;
+	option pe_log_section_entropy = T;
+	option pe_log_section_flags = F;
+	option pe_log_import_table = F;
+
+	# Used to store information per section, non-printable
+	type SectionInfo: record{
+		entropy: double &optional &default=0.0;
+		flags: string &optional &default="";
+	}; 
+
+    redef record PE::Info += {
+		section_info_table: table[string] of SectionInfo &default=table();
+		section_info: vector of string &log &optional;
+		import_table_entries: vector of string &log &optional &default=vector();
+		};
 
 	type ExportName: record {
 		rva:  count;
@@ -54,51 +67,124 @@ export {
 	};
 }
 
+function shannon_entropy(counts: table[count] of count, sectionTotalBytes: double) : double {
+	local entropy: double = 0.0;
+
+	# Calculate the Shannon entropy of the bits
+	# https://en.wikipedia.org/wiki/Entropy_(information_theory)
+	# H(X) = -sum(P_xi * log_2(xi))
+	# where log2() is represented with log10(p_x)/log10(2)
+	for (byte, cnt in counts) {
+		local p_x: double = cnt/sectionTotalBytes;
+
+		if (p_x > 0.0) {
+			entropy = entropy - (p_x * log10(p_x)/log10(2));
+		}
+	}
+
+	return entropy;
+}
+
 event pe_section_bytes_counts(f: fa_file, cts: table[string] of table[count] of count, section_lenghts: table[string] of double) {
 	# Ignore this event when we're not interested in the section entropy
-	if ( ! default_log_section_entropy ) {
+	if ( ! pe_log_section_entropy ) {
 		return;
 	}
 
-	# A temporary table to save the intermediate results
-	local tmp_table: vector of string;
-
 	for (section, counts in cts) {
-		local sectionTotalBytes: double = section_lenghts[section];
-		local entropy: double = 0.0;
+		# Calculate the entropy
+		local entropy: double = shannon_entropy(counts, section_lenghts[section]);
 
-		# Calculate the Shannon entropy of the bits
-		# https://en.wikipedia.org/wiki/Entropy_(information_theory)
-		# H(X) = -sum(P_xi * log_2(xi))
-		# where log2() is represented with log10(p_x)/log10(2)
-		for (byte, cnt in counts) {
-			local p_x: double = cnt/sectionTotalBytes;
-
-			if (p_x > 0.0) {
-				entropy = entropy - (p_x * log10(p_x)/log10(2));
-			}
+		if ( section !in f$pe$section_info_table ) {
+			f$pe$section_info_table[section] = [];
 		}
-
-		local entropy_string: string = fmt("%s:%f", section, entropy);
-
-		# If the vector() is still empty, create one
-		if ( | f$pe$section_entropy | == 0 ) {
-			tmp_table = vector();
-		} else {
-			# Otherwise just set the existing table as the temporary table
-			tmp_table = f$pe$section_entropy;
-		}
-
-		# Add the new entropy string of this section to the table
-		tmp_table += entropy_string;
-
-		# And set the table back to the section_entropy field
-		f$pe$section_entropy = tmp_table;
-
-		## DEBUG
-		#print fmt("Entropy for section '%s': %f", section, entropy);
+		# f$pe$section_info_table[section]$entropy = entropy;
 	}
 }
+
+event pe_section_header(f: fa_file, h: PE::SectionHeader) &priority=1
+{
+	if ( ! pe_log_section_flags ) {
+		return;
+	}
+	
+    # The string that holds the one-character flags, "r", "w" and "e"
+    local flag_string: string = "";
+
+    # Only iterate over the chars once and check if some flags are set
+    # IMAGE_SCN_MEM_EXECUTE     = 0x20000000 -> The section can be executed as code.
+    # IMAGE_SCN_MEM_READ        = 0x40000000 -> The section can be read.
+    # IMAGE_SCN_MEM_WRITE       = 0x80000000 -> The section can be written to.
+
+    # https://docs.microsoft.com/en-us/windows/win32/debug/pe-format#section-flags
+    for ( flag in h$characteristics ) {
+        if ( flag == 0x40000000 ) {
+            flag_string += "r";
+        }
+        if ( flag == 0x80000000 ) {
+            flag_string += "w";
+        }
+        if ( flag == 0x20000000 ) {
+            flag_string += "e";
+        }
+    }
+
+	if ( h$name !in f$pe$section_info_table ) {
+		f$pe$section_info_table[h$name] = [];
+	}
+	f$pe$section_info_table[h$name]$flags = flag_string;
+
+}
+
+event pe_import_table(f: fa_file, it: PE::ImportTable) {
+	if ( ! pe_log_import_table ) {
+		return;
+	}
+    # The vector that we're going to fill
+    local temp_tbl:  vector of string;
+
+    # Iterate over the import table entries
+    for ( i in it$entries ) {
+
+        local e = it$entries[i];
+
+        # If there are any imports....
+        if ( e?$imports ) {
+
+            # ... iterate over them
+            for ( j in e$imports ) {
+
+                # And for every imported function, check whether it's imported by name or ordinal
+                # Add the corresponding information to the vector of strings
+                local imp = e$imports[j];
+
+                if ( imp?$hint_name_rva ) {
+                    temp_tbl += fmt("%s:%s", e?$dll ? e$dll : "nil", imp?$name ? imp$name : "<nil>");
+                }
+                else {
+                    temp_tbl += fmt("%s:%s", e?$dll ? e$dll : "nil", imp$ordinal);
+                }
+            }
+        }
+    }
+    # Finally, put it in the actual PE log
+    f$pe$import_table_entries = temp_tbl;
+}
+
+# Called when the file analysis is closed
+event file_state_remove(f: fa_file)
+    {
+	# Delete the default section_names field
+	delete f$pe$section_names;
+
+	f$pe$section_info = vector();
+
+	for ( section, info in f$pe$section_info_table ) {
+		f$pe$section_info += fmt("%s:%s:%.2f", section, info$flags, info$entropy);
+	}
+
+}
+
 
 module Files;
 
