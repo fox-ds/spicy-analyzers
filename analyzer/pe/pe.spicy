@@ -147,7 +147,19 @@ public type ImageFile = unit {
                 # Get the correct raw bytes of this section by calculating the location
                 # of the bytes relative to the current offset
                 local relativeStart: uint64 = sh.pointerToRawData - off;
-                local sectionBytes: bytes = $$.sub(relativeStart, relativeStart + sh.sizeOfRawData);
+
+                local nBytesToProcess: uint32 = 0;
+
+                # Cut off after 5MiB, since by then you probably have a good idea of whether the section
+                # has high or low entropy. This is done to increase performance. In the case of a large section,
+                # are then calculating the entropy of the first 5MiB of that section.
+                if ( sh.sizeOfRawData > 5242880 ) {
+                    nBytesToProcess = 5242880;
+                } else {
+                    nBytesToProcess = sh.sizeOfRawData;
+                }
+
+                local sectionBytes: bytes = $$.sub(relativeStart, relativeStart + nBytesToProcess);
                 local sectionCount: map<uint8, uint64> = calculateCounts(sectionBytes);
                 self.sectionCounts[section_name] = sectionCount;
                 self.sectionLengths[section_name] = cast<real>(|sectionBytes|);
